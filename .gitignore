@@ -1,0 +1,11 @@
+__pycache__
+.pytest_cache
+.vscode
+.env
+flask_session
+*.log
+*.out
+*.xlsx#
+payload.json
+*.db
+*.db.wal

@@ -1,6 +1,9 @@
 # Excel Analysis Bot
 
-A little side project I worked with @AbhijeetGandhi to automate the process of analyzing excel files. The bot reads the excel file and answers questions.
+I worked on a little side project with @AbhijeetGandhi to automate the process of analyzing Excel files. The bot reads the Excel file and answers questions.
+
+This is a straightforward, linear agent system. There are no complications. Based on the data, agents don't travel alternate routes or paths. 
+
 Here is the rough overview of the bot architecture:
 <!-- embed the image located at repo_asset/rough-arch.png -->
 ![Rough Architecture](repo_asset/rough-arch.png)

@@ -5,8 +5,10 @@ from difflib import SequenceMatcher
 import requests
 import json
 import base64
+from openai import OpenAI
 
 load_dotenv()
+openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 def encode_image(image_path):
     with open(image_path, "rb") as image_file:
@@ -16,11 +18,11 @@ def usage_calculator_agent(run_name, usage, cuuid, total=False):
     input_cost_factor = float(os.environ.get("OPENAI_INPUT_COST", 0.01))
     output_cost_factor = float(os.environ.get("OPENAI_OUTPUT_COST", 0.03))
 
-    input_tokens = usage["prompt_tokens"]
+    input_tokens = usage.prompt_tokens
     input_cost = round(input_tokens / 1000 * input_cost_factor, 4)
-    output_tokens = usage["completion_tokens"]
+    output_tokens = usage.completion_tokens
     output_cost = round(output_tokens / 1000 * output_cost_factor, 4)
-    total_tokens = usage["total_tokens"]
+    total_tokens = usage.total_tokens
     total_cost = round(total_tokens / 1000 * (input_cost_factor + output_cost_factor), 4)
 
     run_data = {
@@ -84,7 +86,9 @@ def return_total_usage_cost(cuuid):
         # iterate through the data and sum the total cost
         total_cost = 0
         for run in data:
-            total_cost += float(run["usage"]["total_cost"].replace("$", ""))
+            if run["run_name"] == "total_use":
+                total_cost = run["usage"]["total_cost"]
+                break
         return total_cost
     else:
         return "No usage data found"
@@ -113,37 +117,33 @@ Respond in pure directly parsaable json format.
 Carefully review the attached images, tables and data.
 Based on the information provided, please answer the following question: " {question} "
 """
-
-    headers = {
-        "Authorization": "Bearer " + os.getenv('OPENAI_API_KEY'),
-        "Content-Type": "application/json",
-    }
     
-    complete_payload = {
-        "model": os.getenv('OPENAI_GEN_MODEL'),
-        "temperature": 0.3,
-        "response_format": { "type": "json_object" },
-        "messages": [
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": question_frame
-                    }
-                ] + message_image_array
-            }
-        ]
-    }
-    file_logger("small_sheet_query_agent - complete_payload", complete_payload, cuuid)
-    response = requests.post(os.getenv('OPENAI_CHAT_URL'), headers=headers, json=complete_payload)
-    file_logger("small_sheet_query_agent", response.json(), cuuid)
-    usage_calculator_agent("small_sheet_agent", response.json()["usage"], cuuid)
-    return json.loads(response.json()['choices'][0]['message']['content'])['answer']
+    payload_messages = [
+        {
+            "role": "system",
+            "content": system_prompt,
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": question_frame
+                }
+            ] + message_image_array
+        }
+    ]
+
+    response = openai_client.chat.completions.create(
+        model=os.getenv('OPENAI_GEN_MODEL'),
+        messages=payload_messages,
+        temperature=0.3,
+        response_format={"type": "json_object"}
+    )
+    file_logger("small_sheet_query_agent - complete_payload", payload_messages, cuuid)
+    file_logger("small_sheet_query_agent", response.model_dump_json(), cuuid)
+    usage_calculator_agent("small_sheet_agent", response.usage, cuuid)
+    return json.loads(response.choices[0].message.content)['answer']
 
 def find_approx_text(metadata, search_text, threshold=0.8):
     csv_files = []
@@ -233,33 +233,29 @@ Following is a query to review and extract the search term:
             "role": "assistant",
             "content": shot['search_term']
         })
-        
-    headers = {
-        "Authorization": "Bearer " + os.getenv('OPENAI_API_KEY'),
-        "Content-Type": "application/json",
-    }
     
-    complete_payload = {
-        "model": os.getenv('OPENAI_GEN_MODEL'),
-        "temperature": 0.3,
-        "response_format": { "type": "json_object" },
-        "messages": [
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
-            *few_shot_messages,
-            {
-                "role": "user",
-                "content": question_frame.format(query=query)
-            }
-        ]
-    }
-    file_logger("search_term_extraction_agent - complete_payload", complete_payload, cuuid)
-    response = requests.post(os.getenv('OPENAI_CHAT_URL'), headers=headers, json=complete_payload)
-    file_logger("search_term_extraction_agent", response.json(), cuuid)
-    usage_calculator_agent("search_term_extraction_agent", response.json()["usage"], cuuid)
-    return json.loads(response.json()['choices'][0]['message']['content'])['search']
+    payload_messages = [
+        {
+            "role": "system",
+            "content": system_prompt,
+        },
+        *few_shot_messages,
+        {
+            "role": "user",
+            "content": question_frame.format(query=query)
+        }
+    ]
+    
+    response = openai_client.chat.completions.create(
+        model=os.getenv('OPENAI_GEN_MODEL'),
+        messages=payload_messages,
+        temperature=0.3,
+        response_format={"type": "json_object"}
+    )
+    file_logger("search_term_extraction_agent - complete_payload", payload_messages, cuuid)
+    file_logger("search_term_extraction_agent", response.model_dump_json(), cuuid)
+    usage_calculator_agent("search_term_extraction_agent", response.usage, cuuid)
+    return json.loads(response.choices[0].message.content)['search']
 
 def subterm_list(metadata, search_term):
     approx_terms = find_approx_text(metadata, search_term)
@@ -333,38 +329,34 @@ Following are the possible correct search terms:
             "role": "assistant",
             "content": shot['search_term']
         })
-        
-    headers = {
-        "Authorization": "Bearer " + os.getenv('OPENAI_API_KEY'),
-        "Content-Type": "application/json",
-    }
-    
-    complete_payload = {
-        "model": os.getenv('OPENAI_GEN_MODEL'),
-        "temperature": 0.3,
-        "response_format": { "type": "json_object" },
-        "messages": [
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
-            *few_shot_messages,
-            {
-                "role": "user",
-                "content": f"""Following is a query to review and correct the search term in it:
+
+    payload_messages = [
+        {
+            "role": "system",
+            "content": system_prompt,
+        },
+        *few_shot_messages,
+        {
+            "role": "user",
+            "content": f"""Following is a query to review and correct the search term in it:
 "{query}"
 
 Following are the possible correct search terms:
 {subterm_list(metadata, search_term)}
 """
-            }
-        ]
-    }
-    file_logger("search_term_query_correction_agent - complete_payload", complete_payload, cuuid)
-    response = requests.post(os.getenv('OPENAI_CHAT_URL'), headers=headers, json=complete_payload)
-    file_logger("search_term_query_correction_agent", response.json(), cuuid)
-    usage_calculator_agent("search_term_query_correction_agent", response.json()["usage"], cuuid)
-    return json.loads(response.json()['choices'][0]['message']['content'])['query']
+        }
+    ]
+    
+    response = openai_client.chat.completions.create(
+        model=os.getenv('OPENAI_GEN_MODEL'),
+        messages=payload_messages,
+        temperature=0.3,
+        response_format={"type": "json_object"}
+    )
+    file_logger("search_term_query_correction_agent - complete_payload", payload_messages, cuuid)
+    file_logger("search_term_query_correction_agent", response.model_dump_json(), cuuid)
+    usage_calculator_agent("search_term_query_correction_agent", response.usage, cuuid)
+    return json.loads(response.choices[0].message.content)['query']
 
 def query_writer_agent(query, table_mapping, cuuid):
     print("Running query writer agent")
@@ -375,10 +367,14 @@ Things to note:
 - You will be given an image, table description from sqllite and a query to convert.
 - The image is a sample of the table in the database. (head of the table)
 - This sample will help you in understanding the table structure and column names.
+- Use your best judgement to formulate the SQL query based on the query provided.
+- The sample image should guide you in understanding the table data and things like what kind of data goes in which column to formulate the search/select query.
 - Write a SQL query to extract the required information from the table.
 - You will respond in a json format.
 - Encapculate all values in double quotes to garuntee the correct SQL query. (Table, Rows, Columns, Values, etc.)
+- Table names and column names may or may not look like numbers, but you have to treat them as strings and encapculate them in double quotes.
 - Anything other that SQL query has to be in double quotes to ensure correct parsing.
+- Fetch from multiple columns together if required. (There can be multiple date columns, or multiple title columns, ex: tender name, client name, consultant name, etc.)
 
 Final objective is to somhow convert the user query to an SQL query that will potensionally return the required information.
 
@@ -388,25 +384,21 @@ The json format is as follows:
 Respond in pure directly parsaable json format.
 """
 
-    multi_payload = []
+    multi_payload_messages = []
     table_list = []
     for table_map in table_mapping:
         table_list.append(table_mapping[table_map]['table_name'])
-        multi_payload.append({
-            "model": os.getenv('OPENAI_GEN_MODEL'),
-            "temperature": 0.3,
-            "response_format": { "type": "json_object" },
-            "messages": [
-                {
-                    "role": "system",
-                    "content": system_prompt,
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"""
+        multi_payload_messages.append([
+            {
+                "role": "system",
+                "content": system_prompt,
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"""
 Carefully review the attached image and table structure.
 Based on the information provided, please formulate an SQL query for the following query: 
 " {query} "
@@ -420,44 +412,43 @@ Columns:
 {json.dumps(table_mapping[table_map]['column_details'], indent=4)}
 ```
 """
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{encode_image(table_mapping[table_map]['sample_image'])}"
-                            }
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{encode_image(table_mapping[table_map]['sample_image'])}"
                         }
-                    ]    
-                }
-            ]
-        })
-    
-    headers = {
-        "Authorization": "Bearer " + os.getenv('OPENAI_API_KEY'),
-        "Content-Type": "application/json",
-    }
-    
+                    }
+                ]    
+            }
+        ])
+
     multi_sql_queries = []
     i = 0
-    for payload in multi_payload:
-        file_logger(f"query_writer_agent_{i}_payload", payload, cuuid)
-        response = requests.post(os.getenv('OPENAI_CHAT_URL'), headers=headers, json=payload)
-        file_logger(f"query_writer_agent_{i}", response.json(), cuuid)
-        usage_calculator_agent(f"query_writer_agent_{i}", response.json()["usage"], cuuid)
+    for payload_messages in multi_payload_messages:
+        file_logger(f"query_writer_agent_{i}_payload", payload_messages, cuuid)
+        response = openai_client.chat.completions.create(
+            model=os.getenv('OPENAI_GEN_MODEL'),
+            messages=payload_messages,
+            temperature=0.3,
+            response_format={"type": "json_object"}
+        )
+        file_logger(f"query_writer_agent_{i}", response.model_dump_json(), cuuid)
+        usage_calculator_agent(f"query_writer_agent_{i}", response.usage, cuuid)
         multi_sql_queries.append({
             "table_name": table_list[i],
-            "query": json.loads(response.json()['choices'][0]['message']['content'])['query']
+            "query": json.loads(response.choices[0].message.content)['query']
         })
         i += 1
     return multi_sql_queries
 
-def response_humanizer_agent(query, response, cuuid):
-    print("Running response humanizer agent")
+def response_humanizer_agent(query, final_response, cuuid):
+    print("Running response humanizer agent with final response:", final_response)
 
-    file_logger("response_humanizer_agent - response param", response, cuuid)
+    file_logger("response_humanizer_agent - response param", final_response, cuuid)
     
-    if not isinstance(response, str):
-        response = json.dumps(response)
+    if not isinstance(final_response, str):
+        final_response = json.dumps(final_response, default=str)
 
     system_prompt = """
 You are a response humanizer bot that helps in converting raw answers and responses to a more human format.
@@ -466,11 +457,8 @@ Things to note:
 - You will be given a query and a list of raw responses.
 - The raw responses are generated by AI and may not be human readable.
 - You have to convert the raw responses to a more human readable format.
-- Do mention the running cost of the agents for each query in a separate line.
-- You will respond in a json format.
+- In case you see the response is a negative one or conveys that the answer is not found, you have to tell the user to try again or reformulate the query a little bit.
 
-The json format is as follows:
-{"response": "The human readable response"}
 """
 
     fewshot_response_pairs = [
@@ -491,7 +479,7 @@ Following is the raw response:
 
 Following is the raw response:
 ```
-31
+<<<31"">>>
 ```
 """,
             "response": "31 tenders have been submitted in year 2015"
@@ -509,52 +497,58 @@ Following is the raw response:
             "role": "assistant",
             "content": shot['response']
         })
-        
-    headers = {
-        "Authorization": "Bearer " + os.getenv('OPENAI_API_KEY'),
-        "Content-Type": "application/json",
-    }
     
-    final_payload = {
-        "model": os.getenv('OPENAI_GEN_MODEL'),
-        "temperature": 0.3,
-        "response_format": { "type": "json_object" },
-        "messages": [
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
-            *few_shot_messages,
-            {
-                "role": "user",
-                "content": f"""Following is a query to review and humanize the response:
+    payload_messages = [
+        {
+            "role": "system",
+            "content": system_prompt,
+        },
+        *few_shot_messages,
+        {
+            "role": "user",
+            "content": f"""Following is a query to review and humanize the response:
 " {query} "
 
 Following is the raw response:
 ```
-{response}
+{final_response}
 ```
 """
-            }
-        ]
-    }
-    file_logger("response_humanizer_agent - final_payload", final_payload, cuuid)
-    response = requests.post(os.getenv('OPENAI_CHAT_URL'), headers=headers, json=final_payload)
-    file_logger("response_humanizer_agent", response.json(), cuuid)
-    usage_calculator_agent("response_humanizer_agent", response.json()["usage"], cuuid)
-    return json.loads(response.json()['choices'][0]['message']['content'])['response']
+        }
+    ]
 
-def file_logger(process_name, data, cuuid):
+    file_logger("response_humanizer_agent - final_payload", payload_messages, cuuid)
+
+    streaming_response = openai_client.chat.completions.create(
+        model=os.getenv('OPENAI_GEN_MODEL'),
+        messages=payload_messages,
+        temperature=0.3,
+        stream=True
+    )
+    complete_response = ""
+    for chunk in streaming_response:
+        content = chunk.choices[0].delta.content
+        if content is not None:
+            yield json.dumps({'success': content, 'action': "response_stream"}).encode() + b"\n"
+            complete_response += content
+
+    file_logger("response_humanizer_agent", complete_response, cuuid)
+    # no usage stats for streaming responses
+    # usage_calculator_agent("response_humanizer_agent", last_chunk.usage, cuuid, total=True)
+    yield json.dumps({'success': True, 'action': "response_stream_complete"}).encode() + b"\n"
+    # return
+
+def file_logger(process_name, response_data, cuuid):
     file_path = f"temp_files/{cuuid}/{cuuid}_logs.json"
-    data = data.copy()
 
-    if isinstance(data, str):
-        data = {"timestamp": pd.Timestamp.now().isoformat(), "process": process_name, "data": data}
-    elif isinstance(data, list):
-        data.append({"timestamp": pd.Timestamp.now().isoformat(), "process": process_name})
-    elif isinstance(data, dict):
-        data["timestamp"] = pd.Timestamp.now().isoformat()
-        data["process"] = process_name
+    if not isinstance(response_data, (str, dict, list)):
+        response_data = response_data.model_dump_json()
+
+    data = {
+        "timestamp": pd.Timestamp.now().isoformat(),
+        "process": process_name,
+        "data": response_data
+    }
     
     # open the file and append the data, then save it
     if os.path.exists(file_path):
